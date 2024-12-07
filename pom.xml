@@ -11,7 +11,7 @@
 	<groupId>com.micro</groupId>
 	<artifactId>INKAEDHEFINALFIX</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<packaging>jar</packaging>
+	<packaging>war</packaging>
 	<name>INKAEDHEFINALFIX</name>
 	<description>About Microservices</description>
 	<url/>
