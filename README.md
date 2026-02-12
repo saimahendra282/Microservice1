@@ -1,11 +1,11 @@
-# Certificate Management Microservice
+# User Management Microservice
 
 <div align="center">
   
-  **Certificate CRUD Operations and Peer Mapping Management**
+  **User Authentication, Authorization, and Notification Management**
   
   [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.4.0-brightgreen.svg)](https://spring.io/projects/spring-boot)
-  [![MongoDB](https://img.shields.io/badge/MongoDB-Atlas-green.svg)](https://www.mongodb.com/cloud/atlas)
+  [![MySQL](https://img.shields.io/badge/MySQL-Railway-blue.svg)](https://www.mysql.com/)
   [![Java](https://img.shields.io/badge/Java-17-orange.svg)](https://www.oracle.com/java/)
   [![Deployed on Railway](https://img.shields.io/badge/Deployed%20on-Railway-purple.svg)](https://railway.app/)
 </div>
@@ -31,13 +31,13 @@
 
 ## Overview
 
-This microservice is part of the **SkillCert Certificate Tracking Platform**, a comprehensive system for managing professional certifications. Microservice 2 handles all certificate-related operations, including CRUD functionality, file storage, and peer-to-certificate mapping management.
+This microservice is part of the **SkillCert Certificate Tracking Platform**, serving as the central authentication and user management system. Microservice 1 handles user registration, authentication, JWT token generation, role-based access control, and notification management.
 
-Built with Spring Boot and MongoDB, this service provides RESTful APIs for certificate management, peer verification workflows, and file storage using MongoDB GridFS.
+Built with Spring Boot and MySQL, this service provides RESTful APIs for user operations, secure authentication using JWT tokens with AES encryption, and a comprehensive notification system for admin-to-user communications.
 
 **Related Repositories**:
 - Frontend: [SDPFRONT](https://github.com/saimahendra282/SDPFRONT)
-- User Management Service: [Microservice1](https://github.com/saimahendra282/Microservice1)
+- Certificate Management Service: [Microservice2](https://github.com/saimahendra282/Microservice2)
 
 ---
 
@@ -48,29 +48,32 @@ Built with Spring Boot and MongoDB, this service provides RESTful APIs for certi
 ```mermaid
 graph TB
     subgraph "Client Layer"
-        A[React Frontend]
+        A[React Frontend<br/>Netlify]
     end
     
-    subgraph "API Layer"
-        B[Certificate Controller<br/>/api/certificates]
-        C[Peer Mapping Controller<br/>/peer-mappings]
+    subgraph "API Gateway Layer"
+        B[User Controller<br/>/api/users]
+        C[Notification Controller<br/>/notifications]
     end
     
     subgraph "Service Layer"
-        D[Certificate Service]
-        E[Peer Mapping Service]
+        D[User Service]
+        E[Notification Service]
         F[JWT Manager]
     end
     
     subgraph "Repository Layer"
-        G[Certificate Repository]
-        H[Peer Mapping Repository]
+        G[User Repository<br/>JPA]
+        H[Notification Repository<br/>JPA]
     end
     
     subgraph "Database Layer"
-        I[(MongoDB Atlas<br/>certificates)]
-        J[(MongoDB Atlas<br/>peer_mappings)]
-        K[GridFS<br/>File Storage]
+        I[(MySQL on Railway<br/>users)]
+        J[(MySQL on Railway<br/>notifications)]
+    end
+    
+    subgraph "External Services"
+        K[Microservice 2<br/>Certificate Service]
     end
     
     A -->|REST API| B
@@ -83,158 +86,174 @@ graph TB
     E --> H
     G --> I
     H --> J
-    D --> K
-    E --> K
+    K -.->|Validates JWT| F
     
     style A fill:#e1f5ff
     style D fill:#fff4e1
     style E fill:#fff4e1
+    style F fill:#ffe6e6
     style I fill:#d4edda
     style J fill:#d4edda
-    style K fill:#d1ecf1
 ```
 
-### Data Flow Architecture
+### Authentication Flow
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant API as Certificate Controller
-    participant S as Certificate Service
+    participant UC as User Controller
+    participant US as User Service
     participant JWT as JWT Manager
-    participant R as Repository
-    participant DB as MongoDB
-    participant GFS as GridFS
+    participant R as User Repository
+    participant DB as MySQL Database
     
-    C->>API: POST /api/certificates<br/>(with JWT + Files)
-    API->>S: saveCertificate(token, cert, pdf, badge)
-    S->>JWT: extractEmailFromToken(token)
-    JWT-->>S: email
-    S->>S: set certificate email
-    S->>GFS: saveFileToGridFS(pdfFile)
-    GFS-->>S: pdfUrl (ObjectId)
-    S->>GFS: saveFileToGridFS(badge)
-    GFS-->>S: badgeUrl (ObjectId)
-    S->>S: set file URLs
-    S->>R: save(certificate)
-    R->>DB: insert document
-    DB-->>R: success
-    R-->>S: certificate saved
-    S-->>API: success
-    API-->>C: 200 OK
+    C->>UC: POST /api/users/register<br/>{name, email, phone, password, role}
+    UC->>US: registerUser(user)
+    US->>US: hashPassword(password)
+    US->>R: save(user)
+    R->>DB: INSERT INTO users
+    DB-->>R: User saved
+    R-->>US: User entity
+    US-->>UC: "Registration successful"
+    UC-->>C: 200 OK
+    
+    C->>UC: POST /api/users/login<br/>{email, password}
+    UC->>US: loginUser(email, password)
+    US->>R: findByEmail(email)
+    R->>DB: SELECT * FROM users WHERE email=?
+    DB-->>R: User record
+    R-->>US: User entity
+    US->>US: verify password hash
+    US->>JWT: generateToken(email, role, name, profilePic, phone)
+    JWT->>JWT: encrypt sensitive data
+    JWT-->>US: JWT token
+    US-->>UC: {token, role}
+    UC-->>C: 200 OK + JWT
 ```
 
-### Peer Mapping Workflow
+### JWT Token Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Created: Admin creates mapping
-    Created --> Pending: Assign to peer
-    Pending --> UnderReview: Peer reviews
+    [*] --> Generated: User login
+    Generated --> Valid: Token issued
+    Valid --> InUse: Request with token
     
-    UnderReview --> Verified: Peer approves
-    UnderReview --> Rejected: Peer rejects
+    InUse --> Valid: Token validated
+    InUse --> Expired: 24 hours passed
+    InUse --> Invalid: Tampering detected
     
-    Verified --> RenewalRequested: User requests renewal
-    RenewalRequested --> RenewalPending: Upload renewal docs
-    RenewalPending --> RenewalApproved: Peer approves renewal
-    RenewalPending --> RenewalRejected: Peer rejects renewal
+    Valid --> Expired: Time elapsed
+    Expired --> [*]
+    Invalid --> [*]
     
-    RenewalApproved --> [*]
-    RenewalRejected --> [*]
-    Rejected --> [*]
-    Verified --> [*]
-    
-    note right of Created
-        PeerMapping created with
-        certificateId and peerEmail
+    note right of Generated
+        Token contains encrypted
+        email, role, name, phone
     end note
     
-    note right of UnderReview
-        Peer can view certificate
-        PDF and badge
+    note right of Valid
+        Token valid for 24 hours
+        Contains user claims
     end note
     
-    note right of RenewalRequested
-        New PDF and expiry date
-        uploaded
+    note right of InUse
+        Validated on every
+        API request
     end note
+```
+
+### User Role Hierarchy
+
+```mermaid
+graph TD
+    A[User Roles]
+    A --> B[Admin]
+    A --> C[Peer]
+    A --> D[User]
+    
+    B --> E[Full System Access]
+    B --> F[Manage Users & Peers]
+    B --> G[Send Notifications]
+    B --> H[View All Data]
+    
+    C --> I[Verify Certificates]
+    C --> J[View Assigned Certs]
+    C --> K[Provide Feedback]
+    
+    D --> L[Upload Certificates]
+    D --> M[View Own Certificates]
+    D --> N[View Mapped Peers]
+    
+    style B fill:#ff6b6b
+    style C fill:#4ecdc4
+    style D fill:#95e1d3
+```
+
+### Notification System Architecture
+
+```mermaid
+graph LR
+    subgraph "Notification Types"
+        A[Admin Notification]
+        A1[Bulk Notification]
+        A2[Targeted Notification]
+    end
+    
+    subgraph "Storage"
+        B[(Notifications Table)]
+        B1[isBulk = true]
+        B2[isBulk = false<br/>targetEmail]
+    end
+    
+    subgraph "Retrieval"
+        C[GET /bulk]
+        D[GET /targetednoti]
+        E[GET /allnoti]
+    end
+    
+    A --> A1
+    A --> A2
+    A1 --> B1
+    A2 --> B2
+    B1 --> C
+    B2 --> D
+    B1 --> E
+    B2 --> E
+    
+    style A1 fill:#ffeb3b
+    style A2 fill:#ff9800
+    style B fill:#4caf50
 ```
 
 ### Component Interaction
 
 ```mermaid
 graph LR
-    subgraph "Microservice 2 Components"
+    subgraph "Microservice 1 Components"
         A[Controllers]
         B[Services]
         C[Repositories]
-        D[Models]
+        D[Models/Entities]
         E[JWT Manager]
-        F[CORS Configuration]
     end
     
     subgraph "External Dependencies"
-        G[Microservice 1<br/>User Service]
-        H[MongoDB Atlas]
-        I[GridFS]
+        F[Microservice 2<br/>Certificate Service]
+        G[MySQL Database<br/>Railway]
     end
     
     A --> B
     B --> C
     B --> E
     C --> D
-    C --> H
-    B --> I
-    A --> F
-    E -.->|Validates JWT| G
+    C --> G
+    F -.->|Validates Tokens| E
     
     style A fill:#17a2b8
     style B fill:#28a745
     style C fill:#ffc107
     style E fill:#dc3545
-```
-
-### File Storage Architecture
-
-```mermaid
-graph TB
-    subgraph "File Upload Flow"
-        A[Client Upload<br/>PDF/Badge]
-        B[Certificate Service]
-        C{File Type}
-        D[GridFsTemplate]
-        E[(GridFS Chunks)]
-        F[(GridFS Files)]
-    end
-    
-    subgraph "File Retrieval Flow"
-        G[GET Request<br/>/pdf or /badge]
-        H[Certificate Service]
-        I[GridFsTemplate Query]
-        J[GridFsResource]
-        K[InputStreamResource]
-    end
-    
-    A --> B
-    B --> C
-    C -->|PDF| D
-    C -->|Image| D
-    D --> E
-    D --> F
-    
-    G --> H
-    H --> I
-    I --> F
-    F --> J
-    J --> K
-    K --> G
-    
-    style A fill:#e3f2fd
-    style B fill:#fff3e0
-    style D fill:#e8f5e9
-    style E fill:#f3e5f5
-    style F fill:#f3e5f5
 ```
 
 ---
@@ -246,305 +265,476 @@ graph TB
 - **Java** 17 - Programming language
 - **Maven** - Dependency management and build tool
 
-### Database and Storage
-- **MongoDB Atlas** - Cloud-hosted NoSQL database
-- **Spring Data MongoDB** - MongoDB integration
-- **GridFS** - Large file storage system
+### Database and Persistence
+- **MySQL** - Relational database (hosted on Railway)
+- **Spring Data JPA** - ORM and data access layer
+- **Hibernate** - JPA implementation
+- **MySQL Connector/J** - JDBC driver
 
 ### Security
 - **JJWT** (0.11.5) - JWT token generation and validation
   - jjwt-api
   - jjwt-impl
   - jjwt-jackson
-- **AES Encryption** - Data encryption for sensitive fields
+- **Custom Password Hashing** - SHA-256 based password security
+- **AES Encryption** - Encryption for sensitive JWT claims
 
 ### Web and API
 - **Spring Boot Starter Web** - RESTful API development
 - **Spring Boot Starter Validation** - Input validation
-- **Spring Boot Starter Thymeleaf** - Template engine (optional)
+- **Spring Boot Starter Tomcat** - Embedded web server
 
 ### Development Tools
 - **Spring Boot DevTools** - Hot reload and development utilities
 - **Spring Boot Starter Test** - Testing framework
+- **Spring Security Test** - Security testing utilities
+
+### Cloud and Deployment
+- **Spring Cloud** (2024.0.0-RC1) - Cloud-native patterns
+- **Railway** - Cloud platform for deployment
 
 ---
 
 ## Features
 
-### Certificate Management
-- Create and store certificates with comprehensive metadata
-- Upload and manage certificate PDF files using GridFS
-- Upload and manage badge images using GridFS
-- Retrieve certificates by ID or user email
-- Fetch all certificates with JWT authentication
-- Track certificate details (name, trackId, trackUrl, issuedBy, dates)
+### User Management
+- User registration with role assignment (User, Peer, Admin)
+- Secure password hashing using SHA-256
+- User profile management (name, email, phone, profilePic, department)
+- Update user and peer profiles
+- Delete users and peers
+- Retrieve all users by role (users, peers, admins)
 
-### Peer Mapping Management
-- Create peer-to-certificate mappings
-- Assign certificates to peers for verification
-- Update verification status (Pending, Verified, Rejected)
-- Add peer comments and feedback
-- Track peer verification workflow
+### Authentication and Authorization
+- User login with credential verification
+- JWT token generation with 24-hour expiration
+- Token validation for protected endpoints
+- Encrypted sensitive data in JWT (email, phone)
+- Role-based access control (RBAC)
+- Profile retrieval using JWT tokens
 
-### Certificate Renewal
-- Request certificate renewal with new documents
-- Upload renewal PDF files
-- Specify renewal reasons and new expiry dates
-- Approve or reject renewal requests
-- Track renewal status separately from verification status
+### Role-Based Actions
+- **Admin Actions**: Full system access and management
+- **Peer Actions**: Certificate verification capabilities
+- **User Actions**: Standard user operations
+- Authorization checks for protected endpoints
 
-### File Management
-- Store PDF files in MongoDB GridFS
-- Store badge images in GridFS
-- Retrieve files by ObjectId
-- Stream files directly to clients
-- Handle multiple file types (PDF, PNG, JPG)
+### Notification System
+- Create and store admin notifications
+- Bulk notifications (broadcast to all users)
+- Targeted notifications (specific user email)
+- Retrieve bulk notifications
+- Retrieve user-specific notifications
+- Admin-only access to all notifications
+- Timestamp tracking for all notifications
 
-### Security
-- JWT token validation for all endpoints
-- Email extraction from encrypted JWT claims
-- Role-based access control integration
+### Security Features
+- Password hashing with SHA-256
+- JWT token encryption with AES
+- Sensitive field encryption (email, phone)
+- Token expiration handling
 - CORS configuration for frontend integration
-- Encrypted sensitive data in JWT tokens
+- Role-based endpoint protection
 
 ---
 
 ## Project Structure
 
 ```
-Microservice2/
+Microservice1/
 ├── src/
 │   ├── main/
 │   │   ├── java/
 │   │   │   └── com/
-│   │   │       └── certi/
+│   │   │       └── micro/
 │   │   │           ├── controllers/
-│   │   │           │   ├── CertificateController.java          # Certificate REST API
-│   │   │           │   └── PeerMappingController.java          # Peer mapping REST API
+│   │   │           │   ├── UserController.java               # User REST API endpoints
+│   │   │           │   └── NotiController.java               # Notification REST API
 │   │   │           │
 │   │   │           ├── services/
-│   │   │           │   ├── CertificateService.java             # Certificate business logic
-│   │   │           │   ├── PeerMappingService.java             # Peer mapping business logic
-│   │   │           │   └── JWTManager.java                     # JWT handling & encryption
+│   │   │           │   ├── UserService.java                  # User business logic
+│   │   │           │   ├── NotiService.java                  # Notification logic
+│   │   │           │   └── JWTManager.java                   # JWT & encryption
 │   │   │           │
 │   │   │           ├── repositories/
-│   │   │           │   ├── CertificateRepository.java          # Certificate data access
-│   │   │           │   └── PeerMappingRepository.java          # Peer mapping data access
+│   │   │           │   ├── UserRepository.java               # User data access
+│   │   │           │   └── NotiRepository.java               # Notification data access
 │   │   │           │
 │   │   │           ├── models/
-│   │   │           │   ├── Certificate.java                    # Certificate entity
-│   │   │           │   ├── PeerMapping.java                    # Peer mapping entity
-│   │   │           │   └── PeerMappingWithCertificateDetails.java
+│   │   │           │   ├── User.java                         # User entity
+│   │   │           │   └── AdminNotification.java            # Notification entity
 │   │   │           │
 │   │   │           ├── config/
-│   │   │           │   └── WebConfig.java                      # CORS configuration
+│   │   │           │   └── SecurityConfig.java               # Security configuration
 │   │   │           │
-│   │   │           └── CertificatesApplication.java            # Main application class
+│   │   │           ├── InkaedhefinalfixApplication.java      # Main application class
+│   │   │           └── ServletInitializer.java               # Servlet configuration
 │   │   │
 │   │   └── resources/
-│   │       ├── application.properties                          # Configuration file
-│   │       └── templates/                                       # Thymeleaf templates (if used)
+│   │       ├── application.properties                        # Configuration file
+│   │       └── static/                                        # Static resources
 │   │
 │   └── test/
 │       └── java/
 │           └── com/
-│               └── certi/
-│                   └── CertificatesApplicationTests.java
+│               └── micro/
+│                   └── InkaedhefinalfixApplicationTests.java
 │
-├── .mvn/                                                        # Maven wrapper
-├── mvnw                                                          # Maven wrapper script (Unix)
-├── mvnw.cmd                                                      # Maven wrapper script (Windows)
-├── pom.xml                                                       # Maven dependencies
-├── .gitignore                                                    # Git ignore rules
-└── README.md                                                     # Project documentation
+├── .mvn/                                                      # Maven wrapper
+├── mvnw                                                        # Maven wrapper script (Unix)
+├── mvnw.cmd                                                    # Maven wrapper script (Windows)
+├── pom.xml                                                     # Maven dependencies
+├── .gitignore                                                  # Git ignore rules
+└── README.md                                                   # Project documentation
 ```
 
 ---
 
 ## API Endpoints
 
-### Certificate Endpoints
+### User Management Endpoints
 
-#### Upload Certificate
+#### Register User
 ```http
-POST /api/certificates
-Content-Type: multipart/form-data
-Authorization: Bearer {JWT_TOKEN}
-
-Parameters:
-- name: String (Certificate name)
-- trackId: String (Tracking ID)
-- trackUrl: String (Tracking URL)
-- issuedBy: String (Issuing authority)
-- issuedDate: String (Issue date)
-- expiryDate: String (Expiry date)
-- pdfFile: MultipartFile (Certificate PDF)
-- badge: MultipartFile (Badge image)
-```
-
-#### Get All Certificates
-```http
-GET /api/certificates/all
-Authorization: Bearer {JWT_TOKEN}
-
-Response: List<Certificate>
-```
-
-#### Get Certificates by Email
-```http
-GET /api/certificates/email
-Authorization: Bearer {JWT_TOKEN}
-
-Response: List<Certificate> (filtered by logged-in user)
-```
-
-#### Get Certificate PDF
-```http
-GET /api/certificates/pdf/{fileId}
-
-Response: PDF file stream
-Content-Type: application/pdf
-```
-
-#### Get Certificate Badge
-```http
-GET /api/certificates/badge/{fileId}
-
-Response: Image file stream
-Content-Type: image/png
-```
-
-#### Get Certificate by ID
-```http
-GET /api/certificates/{id}
-
-Response: Certificate object
-```
-
-### Peer Mapping Endpoints
-
-#### Create Peer Mapping
-```http
-POST /peer-mappings/add
+POST /api/users/register
 Content-Type: application/json
 
 Body:
 {
-  "peerEmail": "peer@example.com",
-  "peerName": "John Doe",
-  "certificateId": "certificate_id_here"
+  "name": "John Doe",
+  "email": "john@example.com",
+  "phone": "1234567890",
+  "password": "securePassword123",
+  "role": "user",
+  "dept": "Engineering",
+  "profilePic": "https://cloudinary.com/profile.jpg"
 }
 
-Response: 201 Created
+Response: "Registration successful."
 ```
 
-#### Get All Peer Mappings
+#### Login User
 ```http
-GET /peer-mappings/all
-
-Response: List<PeerMapping>
-```
-
-#### Get Self-Assigned Mappings
-```http
-GET /peer-mappings/mapped/self
-Authorization: Bearer {JWT_TOKEN}
-
-Response: List<PeerMapping> (for logged-in peer)
-```
-
-#### Update Mapping Status
-```http
-POST /peer-mappings/update-status/{mappingId}
+POST /api/users/login
 Content-Type: application/json
 
 Body:
 {
-  "status": "Verified" | "Rejected",
-  "comment": "Feedback comment"
+  "email": "john@example.com",
+  "password": "securePassword123"
 }
 
-Response: 200 OK
+Response:
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "role": "user"
+}
 ```
 
-#### Request Certificate Renewal
+#### Validate Token
 ```http
-POST /peer-mappings/renew/{mappingId}
-Content-Type: multipart/form-data
+POST /api/users/validate-token
+Content-Type: application/json
 
-Parameters:
-- renewalPdf: MultipartFile (New certificate PDF)
-- renewalReason: String (Reason for renewal)
-- newExpiryDate: String (New expiry date)
+Body:
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
 
-Response: 200 OK
+Response:
+{
+  "code": "200",
+  "email": "john@example.com",
+  "role": "user",
+  "name": "John Doe",
+  "profilePic": "https://cloudinary.com/profile.jpg",
+  "phone": "1234567890"
+}
+```
+
+#### Get User Profile
+```http
+POST /api/users/get-profile
+Content-Type: application/json
+
+Body:
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+
+Response:
+{
+  "email": "john@example.com",
+  "name": "John Doe",
+  "phone": "1234567890",
+  "profilePic": "https://cloudinary.com/profile.jpg",
+  "role": "user",
+  "dept": "Engineering"
+}
+```
+
+#### Update User Profile
+```http
+PUT /api/users/update-profile
+Content-Type: application/json
+
+Body:
+{
+  "email": "john@example.com",
+  "name": "John Updated",
+  "phone": "9876543210",
+  "profilePic": "https://cloudinary.com/new-profile.jpg",
+  "dept": "Management"
+}
+
+Response: "Profile updated successfully."
+```
+
+#### Update User (Admin)
+```http
+PUT /api/users/update-user?email=john@example.com
+Content-Type: application/json
+
+Body:
+{
+  "name": "Updated Name",
+  "phone": "9876543210"
+}
+
+Response:
+{
+  "message": "User updated successfully",
+  "email": "john@example.com"
+}
+```
+
+#### Update Peer (Admin)
+```http
+PUT /api/users/update-peer?email=peer@example.com
+Content-Type: application/json
+
+Body:
+{
+  "name": "Updated Peer Name",
+  "dept": "Verification"
+}
+
+Response:
+{
+  "message": "Peer updated successfully",
+  "email": "peer@example.com"
+}
+```
+
+#### Delete User (Admin)
+```http
+DELETE /api/users/delete-user?email=john@example.com
+
+Response: "User deleted successfully."
+```
+
+#### Delete Peer (Admin)
+```http
+DELETE /api/users/delete-peer?email=peer@example.com
+
+Response: "Peer deleted successfully."
+```
+
+#### Get All Peers
+```http
+GET /api/users/peers
+
+Response: 
+[
+  {
+    "email": "peer1@example.com",
+    "name": "Peer One",
+    "phone": "1111111111",
+    "profilePic": "url",
+    "dept": "IT"
+  }
+]
+```
+
+#### Get All Users
+```http
+GET /api/users/adminusers
+
+Response: 
+[
+  {
+    "email": "user1@example.com",
+    "name": "User One",
+    "role": "user"
+  }
+]
+```
+
+#### Get All Admins
+```http
+GET /api/users/alladmins
+
+Response: 
+[
+  {
+    "email": "admin@example.com",
+    "name": "Admin User",
+    "role": "admin"
+  }
+]
+```
+
+### Role-Based Action Endpoints
+
+#### Admin Action
+```http
+POST /api/users/admin-action
+Content-Type: application/json
+
+Body:
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+
+Response: "Admin action performed successfully."
+```
+
+#### Peer Action
+```http
+POST /api/users/peer-action
+Content-Type: application/json
+
+Body:
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+
+Response: "Peer action performed successfully."
+```
+
+#### User Action
+```http
+POST /api/users/user-action
+Content-Type: application/json
+
+Body:
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+
+Response: "User action performed successfully."
+```
+
+### Notification Endpoints
+
+#### Store Notification
+```http
+POST /notifications/store?isBulk=true
+Authorization: Bearer {JWT_TOKEN}
+Content-Type: application/json
+
+Body:
+{
+  "title": "System Maintenance",
+  "message": "Scheduled maintenance on Sunday",
+  "senderEmail": "admin@example.com",
+  "targetEmail": null
+}
+
+Response: "Notification stored successfully"
+```
+
+#### Get Bulk Notifications
+```http
+GET /notifications/bulk
+
+Response:
+[
+  {
+    "id": 1,
+    "title": "System Update",
+    "message": "New features released",
+    "senderEmail": "admin@example.com",
+    "targetEmail": null,
+    "isBulk": true,
+    "createdAt": "2026-02-12T10:30:00"
+  }
+]
+```
+
+#### Get Targeted Notifications
+```http
+GET /notifications/targetednoti?email=user@example.com
+
+Response:
+[
+  {
+    "id": 2,
+    "title": "Certificate Approved",
+    "message": "Your AWS certificate has been approved",
+    "senderEmail": "admin@example.com",
+    "targetEmail": "user@example.com",
+    "isBulk": false,
+    "createdAt": "2026-02-12T11:00:00"
+  }
+]
+```
+
+#### Get All Notifications (Admin Only)
+```http
+GET /notifications/allnoti
+Authorization: Bearer {JWT_TOKEN}
+
+Response: List of all notifications
 ```
 
 ---
 
 ## Database Schema
 
-### Certificate Collection
+### Users Table
 
-```javascript
-{
-  _id: ObjectId,
-  name: String,                  // Certificate name
-  trackId: String,               // Unique tracking identifier
-  trackUrl: String,              // External tracking URL
-  IssuedBy: String,              // Issuing organization
-  issuedDate: String,            // Date certificate was issued
-  expiryDate: String,            // Date certificate expires
-  pdfFile: String,               // GridFS ObjectId for PDF
-  badge: String,                 // GridFS ObjectId for badge image
-  email: String                  // User email (from JWT)
-}
+```sql
+CREATE TABLE users (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  phone VARCHAR(20),
+  password VARCHAR(255) NOT NULL,
+  role VARCHAR(50) NOT NULL,           -- 'user', 'peer', 'admin'
+  dept VARCHAR(255),
+  profile_pic TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_email ON users(email);
+CREATE INDEX idx_role ON users(role);
 ```
 
-### PeerMapping Collection
+### Notifications Table
 
-```javascript
-{
-  _id: ObjectId,
-  peerEmail: String,             // Email of assigned peer
-  peerName: String,              // Name of assigned peer
-  certificateId: String,         // Reference to Certificate._id
-  status: String,                // "Pending" | "Verified" | "Rejected"
-  comment: String,               // Peer feedback/comments
-  
-  // Renewal fields
-  renewalRequested: Boolean,     // Default: false
-  renewalReason: String,         // Reason for renewal request
-  renewalStatus: String,         // "Pending" | "Approved" | "Rejected"
-  renewPdfFile: String,          // GridFS ObjectId for renewal PDF
-  newExpiryDate: String          // New expiry date after renewal
-}
+```sql
+CREATE TABLE admin_notifications (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  title VARCHAR(255) NOT NULL,
+  message TEXT NOT NULL,
+  sender_email VARCHAR(255) NOT NULL,
+  target_email VARCHAR(255),           -- NULL for bulk notifications
+  is_bulk BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (sender_email) REFERENCES users(email)
+);
+
+CREATE INDEX idx_target_email ON admin_notifications(target_email);
+CREATE INDEX idx_is_bulk ON admin_notifications(is_bulk);
 ```
 
-### GridFS Collections
+### Entity Relationships
 
-GridFS automatically creates two collections:
-
-#### fs.files
-```javascript
-{
-  _id: ObjectId,
-  length: Number,
-  chunkSize: Number,
-  uploadDate: Date,
-  filename: String,
-  metadata: Object
-}
 ```
-
-#### fs.chunks
-```javascript
-{
-  _id: ObjectId,
-  files_id: ObjectId,            // Reference to fs.files._id
-  n: Number,                     // Chunk number
-  data: BinData                  // Binary data chunk
-}
+users (1) ----< (many) admin_notifications [sender]
+users (1) ----< (many) admin_notifications [target]
 ```
 
 ---
@@ -554,34 +744,36 @@ GridFS automatically creates two collections:
 ### Prerequisites
 - **Java Development Kit (JDK) 17** or higher
 - **Maven 3.6+** (or use included Maven wrapper)
-- **MongoDB Atlas account** or local MongoDB installation
-- **Microservice 1** running for JWT token generation
+- **MySQL database** (Railway or local installation)
 
 ### Installation
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/saimahendra282/Microservice2.git
-cd Microservice2
+git clone https://github.com/saimahendra282/Microservice1.git
+cd Microservice1
 ```
 
-2. **Configure MongoDB connection**
+2. **Configure MySQL connection**
 
 Edit `src/main/resources/application.properties`:
 ```properties
-spring.application.name=certificates
-server.port=5000
+spring.application.name=INKAEDHEFINALFIX
+server.port=8081
 
-# MongoDB Configuration
-spring.data.mongodb.uri=mongodb+srv://username:password@cluster.mongodb.net/certificate-db
+# MySQL Configuration
+spring.datasource.url=jdbc:mysql://hostname:port/database_name
+spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver
 
-# GridFS Configuration (optional)
-spring.data.mongodb.gridfs.database=certificate-db
+# JPA/Hibernate Configuration
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.MySQLDialect
+spring.jpa.show-sql=true
 ```
 
 3. **Build the project**
 
-Using Maven wrapper (recommended):
+Using Maven wrapper:
 ```bash
 # Unix/Linux/MacOS
 ./mvnw clean install
@@ -604,13 +796,12 @@ mvn clean install
 mvn spring-boot:run
 
 # Or run the JAR directly
-java -jar target/certificates-0.0.1-SNAPSHOT.jar
+java -jar target/INKAEDHEFINALFIX-0.0.1-SNAPSHOT.jar
 ```
 
 5. **Verify the application is running**
 ```bash
-curl http://localhost:5000/api/certificates/all \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+curl http://localhost:8081/api/users/adminusers
 ```
 
 ---
@@ -621,108 +812,115 @@ curl http://localhost:5000/api/certificates/all \
 
 ```properties
 # Application Settings
-spring.application.name=certificates
-server.port=5000
+spring.application.name=INKAEDHEFINALFIX
+server.port=8081
 
-# MongoDB Connection
-spring.data.mongodb.uri=mongodb+srv://<username>:<password>@<cluster>.mongodb.net/<database>
-spring.data.mongodb.database=certificate-db
+# MySQL Database Configuration
+spring.datasource.url=jdbc:mysql://hostname:port/database
+spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver
 
-# GridFS Configuration
-spring.data.mongodb.gridfs.database=certificate-db
-spring.data.mongodb.gridfs.bucket=fs
+# Static Resources
+spring.web.resources.static-locations=classpath:/static/
 
-# File Upload Settings
-spring.servlet.multipart.enabled=true
-spring.servlet.multipart.max-file-size=10MB
-spring.servlet.multipart.max-request-size=10MB
+# JPA/Hibernate Configuration
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.MySQLDialect
+spring.jpa.show-sql=true
 
-# Logging
-logging.level.com.certi=DEBUG
-logging.level.org.springframework.data.mongodb=DEBUG
-```
+# Optional: Eureka Service Discovery (commented out)
+# eureka.client.service-url.defaultZone=http://localhost:8761/eureka
 
-### CORS Configuration
-
-The application is configured to accept requests from the frontend:
-
-```java
-@Configuration
-public class WebConfig {
-    @Bean
-    public WebMvcConfigurer corsConfigurer() {
-        return new WebMvcConfigurer() {
-            @Override
-            public void addCorsMappings(CorsRegistry registry) {
-                registry.addMapping("/api/**")
-                        .allowedOrigins("https://sdp-vo1.netlify.app")
-                        .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-                        .allowedHeaders("Authorization", "Content-Type", "Accept")
-                        .allowCredentials(true)
-                        .maxAge(3600);
-            }
-        };
-    }
-}
+# Optional: Email Configuration
+# spring.mail.host=smtp.gmail.com
+# spring.mail.port=587
+# spring.mail.username=your-email@gmail.com
+# spring.mail.password=your-app-password
+# spring.mail.properties.mail.smtp.auth=true
+# spring.mail.properties.mail.smtp.starttls.enable=true
 ```
 
 ### JWT Configuration
 
-JWT Manager uses AES encryption for sensitive fields:
+The JWT Manager uses a secret key for token signing:
 
 ```java
 public final String SECRET_KEY = "YOUR_SECRET_KEY_HERE";
 public final SecretKey key = Keys.hmacShaKeyFor(SECRET_KEY.getBytes());
 ```
 
-**Important**: Change the secret key in production and store it securely.
+**Important Security Notes**:
+- Change the secret key in production
+- Store secret keys in environment variables
+- Never commit secrets to version control
+- Use a strong, random key (at least 256 bits)
 
 ---
 
 ## Security
 
-### JWT Token Validation
+### Password Security
 
-All protected endpoints require a valid JWT token:
+Passwords are hashed using SHA-256:
 
 ```java
-@GetMapping("/all")
-public ResponseEntity<List<Certificate>> getAllCertificates(
-    @RequestHeader("Authorization") String authorizationHeader
-) {
-    String token = authorizationHeader.replace("Bearer ", "");
-    String email = certificateService.extractEmailFromToken(token);
-    // ... rest of the logic
+private String hashPassword(String password) {
+    try {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] hash = digest.digest(password.getBytes());
+        return Base64.getEncoder().encodeToString(hash);
+    } catch (Exception e) {
+        throw new RuntimeException("Error hashing password", e);
+    }
 }
 ```
 
-### Data Encryption
+### JWT Token Structure
 
-Sensitive fields in JWT tokens are encrypted using AES:
+Tokens contain encrypted user information:
+
+```json
+{
+  "email": "encrypted_email_data",
+  "role": "user",
+  "name": "John Doe",
+  "profilePic": "https://cloudinary.com/profile.jpg",
+  "phone": "encrypted_phone_data",
+  "iat": 1707732000,
+  "exp": 1707818400
+}
+```
+
+### AES Encryption
+
+Sensitive fields are encrypted using AES:
 
 ```java
 private String encryptData(String data) {
     // AES encryption implementation
+    Cipher cipher = Cipher.getInstance("AES");
+    cipher.init(Cipher.ENCRYPT_MODE, secretKey);
+    byte[] encryptedBytes = cipher.doFinal(data.getBytes());
+    return Base64.getEncoder().encodeToString(encryptedBytes);
 }
 
 private String decryptData(String encryptedData) {
     // AES decryption implementation
+    Cipher cipher = Cipher.getInstance("AES");
+    cipher.init(Cipher.DECRYPT_MODE, secretKey);
+    byte[] decryptedBytes = cipher.doFinal(Base64.getDecoder().decode(encryptedData));
+    return new String(decryptedBytes);
 }
 ```
 
-### Token Structure
+### Role-Based Access Control
 
-JWT tokens contain encrypted user information:
+Endpoints are protected by role validation:
 
-```json
-{
-  "email": "encrypted_email_here",
-  "role": "user|peer|admin",
-  "name": "User Name",
-  "profilePic": "profile_url",
-  "phone": "encrypted_phone_here",
-  "iat": 1234567890,
-  "exp": 1234654290
+```java
+public boolean hasRole(String requiredRole, String token) {
+    Map<String, String> claims = jwtManager.validateToken(token);
+    String userRole = claims.get("role");
+    return requiredRole.equals(userRole);
 }
 ```
 
@@ -730,39 +928,43 @@ JWT tokens contain encrypted user information:
 
 ## Integration
 
-### Integration with Microservice 1
+### Integration with Microservice 2
 
-This service validates JWT tokens generated by Microservice 1:
+Microservice 2 validates JWT tokens from this service:
 
+**Token Generation (MS1)**:
 ```java
-public String extractEmailFromToken(String token) {
-    Map<String, String> claims = jwtManager.validateToken(token);
-    if (claims.get("code").equals("200")) {
-        return claims.get("email");
-    } else {
-        throw new RuntimeException("Invalid or expired token.");
-    }
-}
+String token = jwtManager.generateToken(email, role, name, profilePic, phone);
+```
+
+**Token Validation (MS2)**:
+```java
+String email = jwtManager.extractEmailFromToken(token);
 ```
 
 ### Integration with Frontend
 
-The frontend makes authenticated requests:
+The frontend stores and uses JWT tokens:
 
 ```javascript
-// Example: Upload certificate
-const uploadCertificate = async (formData) => {
+// Login and store token
+const login = async (email, password) => {
+  const response = await axios.post(
+    'https://microservice1-production.up.railway.app/api/users/login',
+    { email, password }
+  );
+  
+  localStorage.setItem('jwtToken', response.data.token);
+  localStorage.setItem('userRole', response.data.role);
+};
+
+// Use token in requests
+const getProfile = async () => {
   const token = localStorage.getItem('jwtToken');
   
   const response = await axios.post(
-    'https://microservice2-production.up.railway.app/api/certificates',
-    formData,
-    {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'multipart/form-data'
-      }
-    }
+    'https://microservice1-production.up.railway.app/api/users/get-profile',
+    { token }
   );
   
   return response.data;
@@ -779,19 +981,19 @@ const uploadCertificate = async (formData) => {
 
 2. **Set environment variables**
 ```bash
-SPRING_DATA_MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/certificate-db
-SERVER_PORT=5000
-JWT_SECRET_KEY=your_secret_key_here
+SPRING_DATASOURCE_URL=jdbc:mysql://railway-host:port/database
+SERVER_PORT=8081
+JWT_SECRET_KEY=your_production_secret_key
 ```
 
 3. **Configure build settings**
 ```
 Build Command: ./mvnw clean package -DskipTests
-Start Command: java -jar target/certificates-0.0.1-SNAPSHOT.jar
+Start Command: java -jar target/INKAEDHEFINALFIX-0.0.1-SNAPSHOT.jar
 ```
 
-4. **Deploy**
-Railway automatically deploys on push to main branch
+4. **Database Setup**
+Railway automatically provisions MySQL instances. Configure the connection URL in environment variables.
 
 ### Docker Deployment (Planned)
 
@@ -799,17 +1001,18 @@ Create `Dockerfile`:
 ```dockerfile
 FROM openjdk:17-jdk-slim
 WORKDIR /app
-COPY target/certificates-0.0.1-SNAPSHOT.jar app.jar
-EXPOSE 5000
+COPY target/INKAEDHEFINALFIX-0.0.1-SNAPSHOT.jar app.jar
+EXPOSE 8081
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
 
 Build and run:
 ```bash
-docker build -t microservice2 .
-docker run -p 5000:5000 \
-  -e SPRING_DATA_MONGODB_URI="mongodb+srv://..." \
-  microservice2
+docker build -t microservice1 .
+docker run -p 8081:8081 \
+  -e SPRING_DATASOURCE_URL="jdbc:mysql://..." \
+  -e JWT_SECRET_KEY="..." \
+  microservice1
 ```
 
 ---
@@ -819,26 +1022,37 @@ docker run -p 5000:5000 \
 ### Technical Improvements
 - Implement Docker containerization
 - Add comprehensive unit and integration tests
-- Implement caching with Redis for frequently accessed certificates
-- Add request rate limiting
-- Implement database connection pooling optimization
-- Add health check endpoints for monitoring
+- Implement Redis caching for user sessions
+- Add request rate limiting per user
+- Implement database connection pooling
+- Add health check and metrics endpoints (Actuator)
+- Implement database migrations with Flyway/Liquibase
 
 ### Feature Additions
-- Certificate expiry notification system
-- Bulk certificate upload functionality
-- Certificate version history tracking
-- Advanced search and filtering capabilities
-- Certificate analytics and reporting
-- Export certificates to various formats (PDF, JSON, CSV)
-- Certificate validation webhook notifications
+- Email verification during registration
+- Password reset functionality
+- Two-factor authentication (2FA)
+- User profile picture upload to Cloudinary
+- Activity logging and audit trails
+- User session management
+- Refresh token mechanism
+- Social authentication (Google, GitHub)
 
 ### Security Enhancements
-- Implement OAuth2 authentication
-- Add API key management for third-party integrations
-- Implement field-level encryption for sensitive data
-- Add audit logging for all operations
+- Implement bcrypt for password hashing
+- Add OAuth2 authentication
+- Implement CSRF protection
+- Add API key management
+- Implement field-level encryption for PII
+- Add brute-force protection
 - Implement HTTPS/TLS certificate pinning
+
+### Notification System Enhancements
+- Email notifications via SMTP
+- Push notifications
+- Notification preferences per user
+- Notification read/unread status
+- Notification categories and filtering
 
 ---
 
@@ -846,32 +1060,46 @@ docker run -p 5000:5000 \
 
 ### Using cURL
 
-**Upload Certificate**:
+**Register User**:
 ```bash
-curl -X POST http://localhost:5000/api/certificates \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -F "name=AWS Certified Developer" \
-  -F "trackId=AWS-123456" \
-  -F "trackUrl=https://verify.aws.com/123456" \
-  -F "issuedBy=Amazon Web Services" \
-  -F "issuedDate=2025-01-01" \
-  -F "expiryDate=2028-01-01" \
-  -F "pdfFile=@certificate.pdf" \
-  -F "badge=@badge.png"
+curl -X POST http://localhost:8081/api/users/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "John Doe",
+    "email": "john@example.com",
+    "phone": "1234567890",
+    "password": "SecurePass123",
+    "role": "user",
+    "dept": "Engineering"
+  }'
 ```
 
-**Get All Certificates**:
+**Login User**:
 ```bash
-curl -X GET http://localhost:5000/api/certificates/all \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+curl -X POST http://localhost:8081/api/users/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "john@example.com",
+    "password": "SecurePass123"
+  }'
+```
+
+**Get User Profile**:
+```bash
+curl -X POST http://localhost:8081/api/users/get-profile \
+  -H "Content-Type: application/json" \
+  -d '{
+    "token": "YOUR_JWT_TOKEN_HERE"
+  }'
 ```
 
 ### Using Postman
 
-1. Import the collection from `/docs/postman_collection.json` (if available)
-2. Set environment variable `BASE_URL` to `http://localhost:5000`
-3. Set environment variable `JWT_TOKEN` to your valid token
-4. Execute requests from the collection
+1. Import API collection
+2. Set environment variables:
+   - `BASE_URL`: `http://localhost:8081`
+   - `JWT_TOKEN`: Your generated token
+3. Execute requests
 
 ---
 
@@ -879,36 +1107,39 @@ curl -X GET http://localhost:5000/api/certificates/all \
 
 ### Common Issues
 
-**Issue**: Connection refused to MongoDB
+**Issue**: Cannot connect to MySQL database
 ```
-Solution: Check MongoDB URI and network connectivity
-Verify: spring.data.mongodb.uri in application.properties
+Solution: Verify database credentials and network connectivity
+Check: spring.datasource.url in application.properties
+Verify: MySQL service is running
 ```
 
 **Issue**: JWT token validation fails
 ```
-Solution: Ensure JWT_SECRET_KEY matches Microservice 1
-Verify: Token is not expired (24-hour validity)
+Solution: Ensure token is not expired (24-hour validity)
+Check: Secret key matches across services
+Verify: Token format is correct (Bearer prefix)
 ```
 
-**Issue**: File upload fails
+**Issue**: "Access denied" errors
 ```
-Solution: Check file size limits in application.properties
-Verify: GridFS is properly configured
-Check: spring.servlet.multipart.max-file-size
+Solution: Verify user role matches endpoint requirements
+Check: Token contains correct role claim
+Verify: Role-based access control logic
 ```
 
-**Issue**: CORS errors from frontend
+**Issue**: Password hash mismatch during login
 ```
-Solution: Update allowedOrigins in WebConfig.java
-Verify: Frontend URL is correctly configured
+Solution: Ensure consistent hashing algorithm
+Check: Password is being hashed on registration
+Verify: Hash comparison logic in login
 ```
+
+
 
 ---
 
-
-
 <div align="center">
   <p>Part of the SkillCert Certificate Tracking Platform</p>
-  <p><strong>Microservice 2</strong> - Certificate and Peer Mapping Management</p>
+  <p><strong>Microservice 1</strong> - User Management and Authentication</p>
 </div>
